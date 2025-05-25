@@ -99,16 +99,8 @@ int main(int argc, char *argv[]) {
     sa.sa_flags = 0;
     sigaction(SIGALRM, &sa, NULL);
 
-    // Get local IP address
-    const char* source_ip = get_local_ip(dest_ip);
-    if (source_ip == NULL) {
-        printf("Error: Could not determine local IP address\n");
-        exit(1);
-    }
-    printf("Using local IP address: %s\n", source_ip);
-
-    // Create sending socket
-    int send_sock = socket(AF_INET, SOCK_RAW, IPPROTO_RAW);
+    // Create sending socket with our custom protocol
+    int send_sock = socket(AF_INET, SOCK_RAW, PROTOCOL_NUM);
     if (send_sock < 0) {
         perror("Send socket creation error");
         exit(1);
@@ -122,36 +114,30 @@ int main(int argc, char *argv[]) {
         exit(1);
     }
 
-    // Set socket options
-    int one = 1;
-    const int *val = &one;
-    if (setsockopt(send_sock, IPPROTO_IP, IP_HDRINCL, val, sizeof(one)) < 0) {
-        perror("setsockopt error");
-        close(send_sock);
-        close(recv_sock);
-        exit(1);
-    }
-
     // Set receive socket to non-blocking mode
     int flags = fcntl(recv_sock, F_GETFL, 0);
     fcntl(recv_sock, F_SETFL, flags | O_NONBLOCK);
 
     // Prepare the packet - now only message header and payload
-    struct {
-        struct message_header header;
-        char payload[MAX_PAYLOAD_SIZE];
-    } packet;
+    struct custom_packet packet;
     static uint16_t sequence_number = 0;
     int message_len = strlen(message);
+
+    if (message_len > sizeof(packet.payload)) {
+        printf("Message too long (max %lu bytes)\n", sizeof(packet.payload));
+        close(send_sock);
+        close(recv_sock);
+        exit(1);
+    }
 
     // Clear the packet buffer
     memset(&packet, 0, sizeof(packet));
 
     // Fill in the message header
     sent_sequence = sequence_number++;  // Store the sequence number we're sending
-    packet.header.magic = htonl(MAGIC_NUMBER);
-    packet.header.sequence = htons(make_client_sequence(sent_sequence));  // Ensure client sequence
-    packet.header.payload_length = htonl(message_len);
+    packet.msg_header.magic = htonl(MAGIC_NUMBER);
+    packet.msg_header.sequence = htons(make_client_sequence(sent_sequence));
+    packet.msg_header.payload_length = htonl(message_len);
 
     // Add payload
     strncpy(packet.payload, message, sizeof(packet.payload) - 1);
@@ -160,25 +146,12 @@ int main(int argc, char *argv[]) {
     printf("\n========== SENDING PACKET ==========\n");
     printf("Destination: %s\n", dest_ip);
     printf("Total packet length: %zu bytes\n", sizeof(struct message_header) + message_len);
-    printf("Sequence number: %d\n", sent_sequence);
-    printf("Payload length: %d\n", message_len);
-    
-    printf("Packet content being sent:\n");
     printf("Message Header:\n");
-    printf("  Magic Number: 0x%08X\n", ntohl(packet.header.magic));
-    printf("  Sequence: %d\n", ntohs(packet.header.sequence));
-    printf("  Payload Length: %d\n", ntohl(packet.header.payload_length));
-    
-    printf("Raw bytes being sent:\n");
-    unsigned char* send_data = (unsigned char*)&packet;
-    size_t total_len = sizeof(struct message_header) + message_len;
-    for (size_t i = 0; i < total_len; i++) {
-        printf("%02X ", send_data[i]);
-        if ((i + 1) % 16 == 0) printf("\n");
-    }
-    printf("\n");
-    printf("Payload as text: %s\n", message);
-    printf("==================================\n\n");
+    printf("  Magic Number: 0x%08X\n", ntohl(packet.msg_header.magic));
+    printf("  Sequence: %d\n", ntohs(packet.msg_header.sequence));
+    printf("  Payload Length: %d\n", ntohl(packet.msg_header.payload_length));
+    printf("Payload: %s\n", message);
+    printf("===================================\n\n");
 
     // Set up destination address
     struct sockaddr_in dest;
@@ -186,7 +159,7 @@ int main(int argc, char *argv[]) {
     dest.sin_family = AF_INET;
     dest.sin_addr.s_addr = inet_addr(dest_ip);
 
-    // Send the packet - only message header and payload
+    // Send the packet
     if (sendto(send_sock, &packet, sizeof(struct message_header) + message_len, 0, 
                (struct sockaddr *)&dest, sizeof(dest)) < 0) {
         printf("Send failed: %s (errno: %d)\n", strerror(errno), errno);
@@ -196,170 +169,116 @@ int main(int argc, char *argv[]) {
     }
 
     printf("Packet sent successfully to %s\n", dest_ip);
-    printf("Payload: %s\n", message);
     printf("Waiting for server echo...\n");
 
-    // Set up poll for receiving response
+    // Wait for response with timeout
     struct pollfd pfd;
     pfd.fd = recv_sock;
     pfd.events = POLLIN;
+    alarm(5);  // 5 second timeout
 
-    // Set 5-second timeout
-    alarm(5);
-    timeout_occurred = 0;
-
-    // Wait for response
     while (!timeout_occurred) {
-        int ready = poll(&pfd, 1, 100); // Poll every 100ms
-        
-        if (ready < 0) {
-            if (errno == EINTR) {
-                // Interrupted by signal, check timeout
-                continue;
-            }
-            perror("poll error");
+        int ret = poll(&pfd, 1, 100);  // Poll every 100ms
+        if (ret < 0) {
+            if (errno == EINTR) continue;  // Interrupted by signal
+            perror("Poll error");
             break;
         }
-        
-        if (ready == 0) {
-            // No data yet, continue waiting
-            continue;
-        }
-
-        if (pfd.revents & POLLIN) {
-            struct custom_packet recv_packet;
+        if (ret > 0 && (pfd.revents & POLLIN)) {
+            char recv_buffer[PACKET_SIZE];
             struct sockaddr_in source;
             socklen_t source_len = sizeof(source);
 
-            ssize_t packet_len = recvfrom(recv_sock, &recv_packet, sizeof(recv_packet), 0,
+            ssize_t packet_len = recvfrom(recv_sock, recv_buffer, sizeof(recv_buffer), 0,
                                         (struct sockaddr *)&source, &source_len);
             
             if (packet_len < 0) {
-                if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) {
-                    continue;
+                if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                    continue;  // No data available
                 }
-                perror("Packet receive error");
-                continue;
+                perror("Receive error");
+                break;
             }
 
             printf("\n========== RECEIVED PACKET ==========\n");
-            printf("Total packet length: %zd bytes from %s\n", 
-                   packet_len, inet_ntoa(source.sin_addr));
-            
-            // Print entire payload area regardless of validity
-            printf("Raw payload area (all bytes after IP header):\n");
-            if (packet_len > sizeof(struct ipheader)) {
-                size_t payload_start = sizeof(struct ipheader);
-                size_t payload_len = packet_len - payload_start;
-                printf("Payload length: %zu bytes\n", payload_len);
-                printf("As hex: ");
-                unsigned char* payload_data = (unsigned char*)&recv_packet + payload_start;
-                for (size_t i = 0; i < payload_len; i++) {
-                    printf("%02X ", payload_data[i]);
-                    if ((i + 1) % 16 == 0) printf("\n        ");
-                }
-                printf("\nAs text: ");
-                for (size_t i = 0; i < payload_len; i++) {
-                    char c = payload_data[i];
-                    printf("%c", (c >= 32 && c <= 126) ? c : '.');
-                }
-                printf("\n");
-            } else {
-                printf("No payload (packet too short)\n");
+            printf("From: %s\n", inet_ntoa(source.sin_addr));
+            printf("Total length: %zd bytes\n", packet_len);
+
+            // Skip the IP header in received data
+            // The first byte contains version (high 4 bits) and header length (low 4 bits)
+            // Header length is in 32-bit words, so multiply by 4 to get bytes
+            unsigned char ip_header_length = (recv_buffer[0] & 0x0F) * 4;
+            char* data = recv_buffer + ip_header_length;
+            ssize_t data_len = packet_len - ip_header_length;
+
+            printf("IP header length: %d bytes\n", ip_header_length);
+            printf("Data length: %zd bytes\n", data_len);
+
+            // We need at least a message header
+            if (data_len < sizeof(struct message_header)) {
+                printf("Packet too small for message header\n");
+                continue;
             }
 
-            // Check if this packet is from our server
-            if (source.sin_addr.s_addr == inet_addr(dest_ip)) {
-                printf("\n========== RECEIVED RESPONSE ==========\n");
-                printf("Source: %s\n", inet_ntoa(source.sin_addr));
-                printf("Total packet length: %zd bytes\n", packet_len);
-                printf("Raw packet dump (first 32 bytes):\n");
-                unsigned char* raw_resp = (unsigned char*)&recv_packet;
-                for (size_t i = 0; i < (packet_len < 32 ? packet_len : 32); i++) {
-                    printf("%02X ", raw_resp[i]);
-                    if ((i + 1) % 16 == 0) printf("\n");
-                }
-                printf("\n====================================\n");
+            // Create a properly aligned packet
+            struct custom_packet aligned_packet;
+            memset(&aligned_packet, 0, sizeof(aligned_packet));
 
-                // Ensure we have enough data for IP header
-                if (packet_len < sizeof(struct ipheader)) {
-                    printf("Packet too small for IP header\n");
-                    continue;
-                }
+            // Copy the message header
+            memcpy(&aligned_packet.msg_header, data, sizeof(struct message_header));
 
-                // First verify this is our protocol
-                struct ipheader* ip = (struct ipheader*)&recv_packet;
-                if (ip->ip_p != PROTOCOL_NUM) {
-                    printf("Ignoring packet with wrong protocol: %d\n", ip->ip_p);
-                    continue;
-                }
-
-                // Get the message header to check sequence
-                struct message_header* msg = (struct message_header*)((char*)&recv_packet + sizeof(struct ipheader));
-                uint16_t recv_sequence = ntohs(msg->sequence);
-
-                // Check if this is a server response (should have server sequence)
-                if (!is_server_sequence(recv_sequence)) {
-                    printf("Ignoring non-server message (sequence: %d)\n", recv_sequence);
-                    continue;
-                }
-
-                // Check if this matches our sent sequence
-                if (get_base_sequence(recv_sequence) != get_base_sequence(sent_sequence)) {
-                    printf("Ignoring response with wrong sequence (got: %d, expected: %d)\n", 
-                           get_base_sequence(recv_sequence), get_base_sequence(sent_sequence));
-                    continue;
-                }
-
-                // Ensure we have enough data for message header
-                if (packet_len < (sizeof(struct ipheader) + sizeof(struct message_header))) {
-                    printf("Packet too small for message header\n");
-                    continue;
-                }
-
-                // Create a properly aligned packet
-                struct custom_packet aligned_packet;
-                memset(&aligned_packet, 0, sizeof(aligned_packet));
-
-                // Copy the IP header
-                memcpy(&aligned_packet.ip, &recv_packet, sizeof(struct ipheader));
-
-                // Calculate offsets carefully
-                char* msg_start = ((char*)&recv_packet) + sizeof(struct ipheader);
-                size_t payload_offset = sizeof(struct ipheader) + sizeof(struct message_header);
-                size_t payload_size = packet_len - payload_offset;
-
-                // Copy the message header
-                memcpy(&aligned_packet.msg_header, msg_start, sizeof(struct message_header));
-
-                // Copy payload if present
-                if (payload_size > 0 && payload_size <= sizeof(aligned_packet.payload)) {
-                    memcpy(aligned_packet.payload, ((char*)&recv_packet) + payload_offset, payload_size);
-                }
-
-                // Debug print raw bytes of message header
-                printf("\n========== RESPONSE HEADER ==========\n");
-                printf("Raw header bytes: ");
-                unsigned char* header_bytes = (unsigned char*)&aligned_packet.msg_header;
-                for (size_t i = 0; i < sizeof(struct message_header); i++) {
-                    printf("%02X ", header_bytes[i]);
-                }
-                printf("\nMagic number: 0x%08X\n", ntohl(aligned_packet.msg_header.magic));
-                printf("Sequence number: %d\n", ntohs(aligned_packet.msg_header.sequence));
-                printf("Payload length: %d\n", ntohl(aligned_packet.msg_header.payload_length));
-                printf("====================================\n\n");
-
-                handle_response(&aligned_packet, &source);
-                break;  // We got our echo, we can exit
-            } else {
-                printf("Ignoring packet from unexpected source: %s\n", 
-                       inet_ntoa(source.sin_addr));
+            // Verify magic number
+            uint32_t magic = ntohl(aligned_packet.msg_header.magic);
+            if (magic != MAGIC_NUMBER) {
+                printf("Invalid magic number: 0x%08X\n", magic);
+                continue;
             }
+
+            // Get sequence number and check if it's a server response
+            uint16_t sequence = ntohs(aligned_packet.msg_header.sequence);
+            if (!is_server_sequence(sequence)) {
+                printf("Ignoring non-server message (sequence: %d)\n", sequence);
+                continue;
+            }
+
+            // Check if this matches our sent sequence
+            if (get_base_sequence(sequence) != get_base_sequence(sent_sequence)) {
+                printf("Ignoring response with wrong sequence (got: %d, expected: %d)\n", 
+                       get_base_sequence(sequence), get_base_sequence(sent_sequence));
+                continue;
+            }
+
+            // Get payload length and validate
+            uint32_t payload_length = ntohl(aligned_packet.msg_header.payload_length);
+            if (payload_length > sizeof(aligned_packet.payload)) {
+                printf("Invalid payload length: %u\n", payload_length);
+                continue;
+            }
+
+            // Copy payload if present
+            if (payload_length > 0) {
+                memcpy(aligned_packet.payload, 
+                       data + sizeof(struct message_header),
+                       payload_length);
+            }
+
+            // Print received message details
+            printf("Message Header:\n");
+            printf("  Magic Number: 0x%08X\n", magic);
+            printf("  Sequence: %d\n", sequence);
+            printf("  Payload Length: %u\n", payload_length);
+            if (payload_length > 0) {
+                printf("Payload: %.*s\n", payload_length, aligned_packet.payload);
+            }
+            printf("===================================\n\n");
+
+            handle_response(&aligned_packet, &source);
+            break;  // We got our response, we can exit
         }
     }
 
     if (timeout_occurred) {
-        printf("Timeout waiting for server echo\n");
+        printf("Timeout waiting for server response\n");
     }
 
     close(send_sock);

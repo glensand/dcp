@@ -52,13 +52,6 @@ inline void debug_print_packet(const struct custom_packet *packet, const struct 
     if (peer) {
         printf("Peer IP: %s\n", inet_ntoa(peer->sin_addr));
     }
-    printf("IP Header:\n");
-    printf("  Version: %d\n", packet->ip.ip_v);
-    printf("  Header Length: %d\n", packet->ip.ip_hl);
-    printf("  Protocol: %d (expected: %d)\n", packet->ip.ip_p, PROTOCOL_NUM);
-    printf("  Total Length: %d\n", ntohs(packet->ip.ip_len));
-    printf("  Source IP: %s\n", inet_ntoa(packet->ip.ip_src));
-    printf("  Dest IP: %s\n", inet_ntoa(packet->ip.ip_dst));
     printf("Message Header:\n");
     printf("  Magic Number (raw): 0x%08X\n", packet->msg_header.magic);
     printf("  Magic Number (converted): 0x%08X (expected: 0x%08X)\n", 
