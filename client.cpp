@@ -1,5 +1,4 @@
 #include "client.h"
-#include "raw_socket_protocol.h"
 #include "raw_socket_common.h"
 
 static uint16_t sequence_number = 0;

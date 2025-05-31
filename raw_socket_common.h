@@ -16,7 +16,6 @@
 #include <netinet/ip.h>
 #include <net/if.h>
 #include <netdb.h>
-#include "raw_socket_protocol.h"
 
 #define MAX_PAYLOAD_SIZE 1024  // Maximum size for packet payload
 
@@ -24,6 +23,24 @@
 #define SERVER_SEQUENCE_MASK 0x8000   // High bit set for server messages
 #define CLIENT_SEQUENCE_MASK 0x7FFF   // High bit clear for client messages
 #define SEQUENCE_NUMBER_MASK 0x7FFF   // Mask to get the actual sequence number
+
+#define PACKET_SIZE 4096
+#define PROTOCOL_NUM 200
+#define MAGIC_NUMBER 0x1234ABCD
+
+// Message header
+struct message_header {
+    uint32_t magic;          // Magic number to identify our protocol
+    uint16_t sequence;       // Sequence number
+    uint32_t payload_length; // Length of the payload
+};
+
+// Our custom packet structure
+struct custom_packet {
+    struct message_header msg_header;
+    char payload[PACKET_SIZE - sizeof(struct message_header)];
+};
+
 
 // Helper functions for sequence numbers
 inline uint16_t make_server_sequence(uint16_t seq) {

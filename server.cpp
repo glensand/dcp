@@ -1,6 +1,4 @@
 #include "server.h"
-#include "raw_socket_protocol.h"
-#include "raw_socket_common.h"
 
 #include <sys/socket.h>
 #include <netinet/in.h>

@@ -1,121 +1,127 @@
-# Raw Socket Communication with XOR Encryption
+# Raw Socket Communication System
 
-This project implements a simple raw socket communication system using XOR-based encryption. It consists of a client and server that can exchange encrypted messages over raw IP sockets.
+This project implements a simple client-server communication system using raw sockets. It demonstrates how to create a custom protocol on top of IP, with proper packet handling and sequence number tracking.
 
 ## Features
 
-- Custom protocol over raw IP sockets
-- XOR-based encryption with a 32-byte key
-- Random salt generation for each message
-- Sequence number tracking
+- Custom protocol implementation over raw sockets
+- Sequence number tracking for client/server messages
+- Non-blocking socket operations
+- Timeout handling
 - Interface selection support
-- No external dependencies
-
-## Prerequisites
-
-- CMake 3.10 or higher
-- C++11 compatible compiler
-
-## Building
-
-1. Create a build directory and navigate to it:
-```bash
-mkdir build
-cd build
-```
-
-2. Configure and build the project:
-```bash
-cmake ..
-make
-```
-
-This will create three executables:
-- `generate_key_xor`: Utility to generate key files
-- `raw_socket_client_xor`: Client program for sending encrypted messages
-- `raw_socket_server_xor`: Server program for receiving encrypted messages
-
-## Usage
-
-### 1. Generate an XOR Key
-
-First, generate a key file that will be used by both the client and server:
-
-```bash
-sudo ./generate_key_xor xor.key
-```
-
-The key file must be accessible by both the client and server.
-
-### 2. Start the Server
-
-The server can listen on all interfaces or a specific one:
-
-```bash
-# Listen on all interfaces
-sudo ./raw_socket_server_xor -k xor.key
-
-# Listen on a specific interface (e.g., en0)
-sudo ./raw_socket_server_xor -k xor.key -i en0
-```
-
-### 3. Send Messages from the Client
-
-The client requires a destination IP address and message:
-
-```bash
-sudo ./raw_socket_client_xor -d <destination_ip> -m "Your secret message" -k xor.key
-```
-
-## Security Notes
-
-1. The XOR encryption used in this project is a simple demonstration and not cryptographically secure.
-2. Each message uses a random salt to provide some basic protection against replay attacks.
-3. The key file should be kept secure and only accessible by authorized users.
-4. Raw sockets require root privileges (sudo).
+- Detailed debug output
+- Clean protocol layering (OS handles IP, we handle application layer)
 
 ## Protocol Details
 
-- Custom protocol number: 200
-- Magic number: 0x1234ABCD
-- XOR key size: 32 bytes
-- Salt size: 8 bytes
-- Message types:
-  - HELLO (1)
-  - DATA (2)
-  - ACK (3)
-  - GOODBYE (4)
+### Protocol Structure
+- Protocol Number: 200 (custom protocol number)
+- Magic Number: 0x1234ABCD (for packet validation)
+- Maximum Payload Size: 1024 bytes
 
-## Example Usage
+### Message Format
+```
+Message Header:
+  - Magic Number (4 bytes)
+  - Sequence Number (2 bytes)
+  - Payload Length (4 bytes)
 
-1. Generate a key:
-```bash
-sudo ./generate_key_xor xor.key
+Payload:
+  - Variable length data (up to 1024 bytes)
 ```
 
-2. Start the server in one terminal:
+### Sequence Numbers
+- Client messages: High bit clear (0x0000 - 0x7FFF)
+- Server messages: High bit set (0x8000 - 0xFFFF)
+- Base sequence number preserved for matching requests/responses
+
+## Building
+
 ```bash
-sudo ./raw_socket_server_xor -k xor.key
+# Compile the client
+g++ -o raw_socket_client raw_socket_client_new.cpp -std=c++11
+
+# Compile the server
+g++ -o raw_socket_server raw_socket_server_new.cpp -std=c++11
 ```
 
-3. Send an encrypted message from another terminal:
+## Usage
+
+### Starting the Server
 ```bash
-sudo ./raw_socket_client_xor -d 127.0.0.1 -m "Hello, encrypted world!" -k xor.key
+# Listen on all interfaces
+sudo ./raw_socket_server
+
+# Listen on a specific interface
+sudo ./raw_socket_server -i eth0
 ```
 
-## How the XOR Encryption Works
+### Running the Client
+```bash
+# Send a message
+sudo ./raw_socket_client -d <destination_ip> -m "Your message"
+```
 
-1. Each message is encrypted using both a static key and a random salt:
-   - The static key is a 32-byte value stored in the key file
-   - The salt is 8 random bytes generated for each message
+### Command Line Options
 
-2. The encryption process:
-   - First XOR the message with the salt (repeated if needed)
-   - Then XOR the result with the key (repeated if needed)
+Server:
+- `-i <interface>`: Network interface to listen on (optional)
+- `-h`: Show help message
 
-3. The decryption process is identical since XOR is its own inverse:
-   - XOR with the salt
-   - XOR with the key
-   - The original message is recovered
+Client:
+- `-d <dest_ip>`: Destination IP address (required)
+- `-m <message>`: Message to send (required)
+- `-h`: Show help message
 
-This provides a basic level of message privacy and some protection against replay attacks, though it should not be used for sensitive data in production environments.
+## Implementation Notes
+
+1. Raw Socket Creation
+   - Uses protocol number 200 for both sending and receiving
+   - Non-blocking mode for efficient I/O
+
+2. Packet Processing
+   - IP headers handled by OS
+   - Application protocol starts after IP header
+   - Proper header alignment and payload handling
+
+3. Security Features
+   - Magic number validation
+   - Sequence number tracking
+   - Payload length validation
+
+4. Error Handling
+   - Timeout for client responses
+   - Graceful server shutdown
+   - Comprehensive error checking
+   - Detailed debug output
+
+## Requirements
+
+- Linux/Unix-based system with raw socket support
+- Root privileges (for raw socket operations)
+- C++11 compatible compiler
+
+## Security Notes
+
+1. Raw sockets require root privileges
+2. This is a demonstration project and should not be used in production without additional security measures
+3. No encryption is implemented - data is sent in clear text
+4. Consider adding authentication and encryption for production use
+
+## Debugging
+
+The system provides detailed debug output including:
+- Packet structure and contents
+- IP header information
+- Sequence numbers
+- Magic number validation
+- Payload contents
+- Error conditions
+
+## Known Limitations
+
+1. Maximum payload size of 1024 bytes
+2. Requires root privileges
+3. No retransmission mechanism
+4. No connection state tracking
+5. No encryption or authentication
