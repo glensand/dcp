@@ -1,7 +1,6 @@
 #include "client.h"
 #include "raw_socket_common.h"
-
-static uint16_t sequence_number = 0;
+#include <unistd.h>
 
 client::client() {
     // Create sending socket with our custom protocol
@@ -41,10 +40,9 @@ void client::send_message(const std::string& dest_ip, const std::string& message
     memset(&packet, 0, sizeof(packet));
 
     // Fill in the message header
-    sent_sequence = sequence_number++;  // Store the sequence number we're sending
-    packet.msg_header.magic = htonl(MAGIC_NUMBER);
-    packet.msg_header.sequence = htons(make_client_sequence(sent_sequence));
-    packet.msg_header.payload_length = htonl(message_len);
+    packet.msg_header.src_pid = getpid();  // Get current process ID and convert to network byte order
+    packet.msg_header.dst_pid = 0; // it means anyone can receive this packet
+    packet.msg_header.payload_length = message_len;
 
     // Add payload
     strncpy(packet.payload, message.c_str(), message_len);
@@ -76,7 +74,7 @@ std::string client::receive_response() {
             throw std::runtime_error("Poll error: " + std::string(strerror(errno)));
         }
         if (ret > 0 && (pfd.revents & POLLIN)) {
-            char recv_buffer[PACKET_SIZE];
+            char recv_buffer[2048]; // actually max packet size is 1500 bytes;
             struct sockaddr_in source;
             socklen_t source_len = sizeof(source);
 
@@ -115,31 +113,15 @@ std::string client::receive_response() {
             memset(&aligned_packet, 0, sizeof(aligned_packet));
 
             // Copy the message header
-            memcpy(&aligned_packet.msg_header, data, sizeof(struct message_header));
+            memcpy(&aligned_packet.msg_header, data, sizeof(message_header));
 
-            // Verify magic number
-            uint32_t magic = ntohl(aligned_packet.msg_header.magic);
-            if (magic != MAGIC_NUMBER) {
-                printf("Invalid magic number: 0x%08X\n", magic);
-                continue;
-            }
-
-            // Get sequence number and check if it's a server response
-            uint16_t sequence = ntohs(aligned_packet.msg_header.sequence);
-            if (!is_server_sequence(sequence)) {
-                printf("Ignoring non-server message (sequence: %d)\n", sequence);
-                continue;
-            }
-
-            // Check if this matches our sent sequence
-            if (get_base_sequence(sequence) != get_base_sequence(sent_sequence)) {
-                printf("Ignoring response with wrong sequence (got: %d, expected: %d)\n", 
-                       get_base_sequence(sequence), get_base_sequence(sent_sequence));
+            if (aligned_packet.msg_header.dst_pid != getpid()) {
+                printf("Not my message, skipped. Destination is %d, I am %d\n", aligned_packet.msg_header.dst_pid, getpid());
                 continue;
             }
 
             // Get payload length and validate
-            uint32_t payload_length = ntohl(aligned_packet.msg_header.payload_length);
+            uint32_t payload_length = aligned_packet.msg_header.payload_length;
             if (payload_length > sizeof(aligned_packet.payload)) {
                 printf("Invalid payload length: %u\n", payload_length);
                 continue;
@@ -154,8 +136,6 @@ std::string client::receive_response() {
 
             // Print received message details
             printf("Message Header:\n");
-            printf("  Magic Number: 0x%08X\n", magic);
-            printf("  Sequence: %d\n", sequence);
             printf("  Payload Length: %u\n", payload_length);
             if (payload_length > 0) {
                 printf("Payload: %.*s\n", payload_length, aligned_packet.payload);

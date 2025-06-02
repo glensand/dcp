@@ -1,5 +1,7 @@
 #pragma once
 
+#include <_types/_uint16_t.h>
+#include <_types/_uint32_t.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -17,51 +19,29 @@
 #include <net/if.h>
 #include <netdb.h>
 
-#define MAX_PAYLOAD_SIZE 1024  // Maximum size for packet payload
-
 // Sequence number masks
 #define SERVER_SEQUENCE_MASK 0x8000   // High bit set for server messages
 #define CLIENT_SEQUENCE_MASK 0x7FFF   // High bit clear for client messages
 #define SEQUENCE_NUMBER_MASK 0x7FFF   // Mask to get the actual sequence number
 
-#define PACKET_SIZE 4096
+#define MAX_PAYLOAD_SIZE 1400  // let it be our MTU
+
 #define PROTOCOL_NUM 200
-#define MAGIC_NUMBER 0x1234ABCD
+#define MAGIC_NUMBER 0xDEADC0DE
 
 // Message header
 struct message_header {
-    uint32_t magic;          // Magic number to identify our protocol
-    uint16_t sequence;       // Sequence number
-    uint32_t payload_length; // Length of the payload
+    uint16_t src_pid = 0; // we will threat PID as unique ID of a client/server
+    uint16_t dst_pid = 0; // we will threat PID as unique ID of a client/server
+    uint16_t payload_length = 0; // Length of this packet
+    uint16_t checksum = 0;
 };
 
 // Our custom packet structure
 struct custom_packet {
     struct message_header msg_header;
-    char payload[PACKET_SIZE - sizeof(struct message_header)];
+    char payload[MAX_PAYLOAD_SIZE - sizeof(message_header)];
 };
-
-
-// Helper functions for sequence numbers
-inline uint16_t make_server_sequence(uint16_t seq) {
-    return (seq & CLIENT_SEQUENCE_MASK) | SERVER_SEQUENCE_MASK;
-}
-
-inline uint16_t make_client_sequence(uint16_t seq) {
-    return seq & CLIENT_SEQUENCE_MASK;
-}
-
-inline bool is_server_sequence(uint16_t seq) {
-    return (seq & SERVER_SEQUENCE_MASK) != 0;
-}
-
-inline bool is_client_sequence(uint16_t seq) {
-    return (seq & SERVER_SEQUENCE_MASK) == 0;
-}
-
-inline uint16_t get_base_sequence(uint16_t seq) {
-    return seq & SEQUENCE_NUMBER_MASK;
-}
 
 // Debug function to print packet details
 inline void debug_print_packet(const struct custom_packet *packet, const struct sockaddr_in *peer, const char *prefix) {
@@ -70,10 +50,8 @@ inline void debug_print_packet(const struct custom_packet *packet, const struct 
         printf("Peer IP: %s\n", inet_ntoa(peer->sin_addr));
     }
     printf("Message Header:\n");
-    printf("  Magic Number (raw): 0x%08X\n", packet->msg_header.magic);
-    printf("  Magic Number (converted): 0x%08X (expected: 0x%08X)\n", 
-           ntohl(packet->msg_header.magic), MAGIC_NUMBER);
-    printf("  Sequence: %d\n", ntohs(packet->msg_header.sequence));
+    printf("  Src PID: %d\n", ntohs(packet->msg_header.src_pid));
+    printf("  Dst PID: %d\n", ntohs(packet->msg_header.dst_pid));
     printf("  Payload Length: %d\n", ntohl(packet->msg_header.payload_length));
 }
 

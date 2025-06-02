@@ -19,7 +19,7 @@ public:
 
 private:
     void process();
-    void queue_response(const struct sockaddr_in *dest, uint16_t sequence, 
+    void queue_response(const struct sockaddr_in *dest, uint16_t dst_pid, 
                         const char *payload, size_t payload_len);
     bool process_send_queue();
 
@@ -30,10 +30,7 @@ private:
 
     // Structure to hold outgoing messages
     struct outgoing_message {
-        struct {
-            struct message_header header;
-            char payload[MAX_PAYLOAD_SIZE];
-        } packet;
+        custom_packet packet;
         struct sockaddr_in dest_addr;
         size_t total_length;    // Total message length
         size_t bytes_sent;      // Number of bytes sent so far
@@ -43,7 +40,4 @@ private:
 
     // Queue for outgoing messages
     std::queue<outgoing_message> send_queue;
-
-    // Track our last sent sequence number to identify our own packets
-    uint16_t last_sent_sequence = 0;
 };

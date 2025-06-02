@@ -80,7 +80,7 @@ void server::process() {
     if (ready != 0){
         // Handle incoming data
         if (pfd.revents & POLLIN) {
-            char recv_buffer[PACKET_SIZE];
+            char recv_buffer[2048];
             struct sockaddr_in source;
             socklen_t source_len = sizeof(source);
             ssize_t packet_len = recvfrom(m_socket, recv_buffer, sizeof(recv_buffer), 0,
@@ -106,42 +106,28 @@ void server::process() {
             printf("IP header length: %d bytes\n", ip_header_length);
             printf("Data length: %zd bytes\n", data_len);
             // We need at least a message header
-            if (data_len < sizeof(struct message_header)) {
+            if (data_len < sizeof(message_header)) {
                 throw std::runtime_error("Packet too small for message header");
             }
             // Create a properly aligned packet
-            struct custom_packet aligned_packet;
-            memset(&aligned_packet, 0, sizeof(aligned_packet));
-            // Copy the message header
-            memcpy(&aligned_packet.msg_header, data, sizeof(struct message_header));
-            // Verify magic number
-            uint32_t magic = ntohl(aligned_packet.msg_header.magic);
-            if (magic != MAGIC_NUMBER) {    
-                throw std::runtime_error("Invalid magic number: 0x" + std::to_string(magic));
-            }
-            // Get sequence number and check if it's a client message
-            uint16_t sequence = ntohs(aligned_packet.msg_header.sequence);
-            if (!is_client_sequence(sequence)) {
-                throw std::runtime_error("Ignoring non-client message (sequence: " + std::to_string(sequence) + ")");
-            }
+            auto* header = (message_header*)data;
             // Get payload length and validate
-            uint32_t payload_length = ntohl(aligned_packet.msg_header.payload_length);
-            if (payload_length > sizeof(aligned_packet.payload)) {
+            uint32_t payload_length = header->payload_length;
+            if (payload_length > sizeof(recv_buffer)) {
                 throw std::runtime_error("Invalid payload length: " + std::to_string(payload_length));
             }
-            // Copy payload if present
-            if (payload_length > 0) {
-                memcpy(aligned_packet.payload, 
-                       data + sizeof(struct message_header),
-                       payload_length);
+            if (header->src_pid == getpid() || (header->dst_pid != getpid() && header->dst_pid != 0)) {
+                printf("Not my message, skipped. Destination is %d, I am %d\n", header->dst_pid, getpid());
+                return;
             }
+            char* payload = data + sizeof(message_header);
             // Print received message details
             printf("Message Header:\n");
-            printf("  Magic Number: 0x%08X\n", magic);
-            printf("  Sequence: %d\n", sequence);
+            printf("  Src PID: %d\n", header->src_pid);
+            printf("  Dst PID: %d\n", header->dst_pid);
             printf("  Payload Length: %u\n", payload_length);
             if (payload_length > 0) {
-                printf("Payload: %.*s\n", payload_length, aligned_packet.payload);
+                printf("Payload: %.*s\n", payload_length, payload);
             }
             printf("===================================\n\n");
             // Echo the message back with a prefix
@@ -156,10 +142,9 @@ void server::process() {
 
             char response[MAX_PAYLOAD_SIZE];
             memcpy(response, prefix, prefix_len);
-            memcpy(response + prefix_len, aligned_packet.payload, 
-                   total_len - prefix_len);
+            memcpy(response + prefix_len, payload, payload_length);
 
-            queue_response(&source, sequence, response, total_len);
+            queue_response(&source, header->src_pid, response, total_len);
         }
         // Handle outgoing data
         if (pfd.revents & POLLOUT && !send_queue.empty()) {
@@ -173,8 +158,6 @@ void server::process() {
             throw std::runtime_error("Socket error detected");
         }
     }
-
-    
 }
 
 // Process outgoing messages
@@ -194,10 +177,6 @@ bool server::process_send_queue() {
         printf("Destination: %s\n", inet_ntoa(msg.dest_addr.sin_addr));
         printf("Total packet length: %zu bytes\n", msg.total_length);
         printf("Message Header:\n");
-        printf("  Magic Number: 0x%08X\n", ntohl(msg.packet.header.magic));
-        printf("  Sequence: %d\n", ntohs(msg.packet.header.sequence));
-        printf("  Payload Length: %d\n", ntohl(msg.packet.header.payload_length));
-        printf("Payload: %.*s\n", (int)ntohl(msg.packet.header.payload_length), msg.packet.payload);
         printf("===================================\n\n");
 
         // Try to send the packet
@@ -235,18 +214,15 @@ bool server::process_send_queue() {
     return true;
 }
 
-void server::queue_response(const struct sockaddr_in *dest, uint16_t sequence, 
+void server::queue_response(const struct sockaddr_in *dest, uint16_t dst_pid, 
                             const char *payload, size_t payload_len) {
     struct outgoing_message msg;
     memset(&msg.packet, 0, sizeof(msg.packet));
 
-    // Store sequence number
-    last_sent_sequence = sequence;
-
     // Set up message header with server sequence
-    msg.packet.header.magic = htonl(MAGIC_NUMBER);
-    msg.packet.header.sequence = htons(make_server_sequence(sequence));
-    msg.packet.header.payload_length = htonl(payload_len);
+    msg.packet.msg_header.src_pid = getpid();
+    msg.packet.msg_header.dst_pid = dst_pid;
+    msg.packet.msg_header.payload_length = payload_len;
 
     // Copy payload if present
     if (payload && payload_len > 0) {
@@ -255,7 +231,7 @@ void server::queue_response(const struct sockaddr_in *dest, uint16_t sequence,
 
     // Set message properties
     msg.dest_addr = *dest;
-    msg.total_length = sizeof(struct message_header) + payload_len;
+    msg.total_length = sizeof(message_header) + payload_len;
     msg.bytes_sent = 0;
 
     // Add to send queue
