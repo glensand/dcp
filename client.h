@@ -8,7 +8,7 @@ public:
     ~client();
 
     void send_message(const std::string& dest_ip, const std::string& message);
-    std::string receive_response();
+    std::string receive_response(bool print_packet = false);
     
 private:
     int m_send_socket = -1;

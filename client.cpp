@@ -60,7 +60,7 @@ void client::send_message(const std::string& dest_ip, const std::string& message
     }
 }
 
-std::string client::receive_response() {
+std::string client::receive_response(bool print_packet) {
     // Implement response receiving logic
     // Wait for response with timeout
     struct pollfd pfd;
@@ -88,9 +88,11 @@ std::string client::receive_response() {
                 throw std::runtime_error("Receive error: " + std::string(strerror(errno)));
             }
 
-            printf("\n========== RECEIVED PACKET ==========\n");
-            printf("From: %s\n", inet_ntoa(source.sin_addr));
-            printf("Total length: %zd bytes\n", packet_len);
+            if (print_packet) {
+                printf("\n========== RECEIVED PACKET ==========\n");
+                printf("From: %s\n", inet_ntoa(source.sin_addr));
+                printf("Total length: %zd bytes\n", packet_len);
+            }
 
             // Skip the IP header in received data
             // The first byte contains version (high 4 bits) and header length (low 4 bits)
@@ -99,8 +101,10 @@ std::string client::receive_response() {
             char* data = recv_buffer + ip_header_length;
             ssize_t data_len = packet_len - ip_header_length;
 
-            printf("IP header length: %d bytes\n", ip_header_length);
-            printf("Data length: %zd bytes\n", data_len);
+            if (print_packet) {
+                printf("IP header length: %d bytes\n", ip_header_length);
+                printf("Data length: %zd bytes\n", data_len);
+            }
 
             // We need at least a message header
             if (data_len < sizeof(struct message_header)) {
@@ -116,7 +120,9 @@ std::string client::receive_response() {
             memcpy(&aligned_packet.msg_header, data, sizeof(message_header));
 
             if (aligned_packet.msg_header.dst_pid != getpid()) {
-                printf("Not my message, skipped. Destination is %d, I am %d\n", aligned_packet.msg_header.dst_pid, getpid());
+                if (print_packet) {
+                    printf("Not my message, skipped. Destination is %d, I am %d\n", aligned_packet.msg_header.dst_pid, getpid());
+                }
                 continue;
             }
 
@@ -135,12 +141,18 @@ std::string client::receive_response() {
             }
 
             // Print received message details
-            printf("Message Header:\n");
-            printf("  Payload Length: %u\n", payload_length);
-            if (payload_length > 0) {
-                printf("Payload: %.*s\n", payload_length, aligned_packet.payload);
+            if (print_packet) {
+                printf("Message Header:\n");
+                printf("  Payload Length: %u\n", payload_length);
             }
-            printf("===================================\n\n");
+            if (payload_length > 0) {
+                if (print_packet) {
+                    printf("Payload: %.*s\n", payload_length, aligned_packet.payload);
+                }
+            }
+            if (print_packet) {
+                printf("===================================\n\n");
+            }
 
             std::string response(aligned_packet.payload, payload_length);
             return response;
@@ -150,11 +162,33 @@ std::string client::receive_response() {
 }
 
 #include <iostream>
+#include <stdlib.h>
+#include <unistd.h>
+#include <sys/types.h>
 
-int main() {
+void do_client_stuff() {
     client c;
-    c.send_message("127.0.0.1", "Hello, server!");
+    c.send_message("127.0.0.1", std::string("Hello, server!") + std::to_string(getpid()));
     std::string response = c.receive_response();
     std::cout << "Response: " << response << std::endl;
+}
+
+int main() {
+    static const auto NumProcesses = 7;
+    for (auto i = 0; i < NumProcesses - 1; ++i) {
+        pid_t processId;
+        if ((processId = fork()) == 0) {
+            // child process, do client stuff
+            do_client_stuff();
+            return 0;
+        } else if (processId < 0) {
+            perror("fork error");
+            return -1;
+        }
+    }
+
+    // do clint stuff from parent processs as well
+    do_client_stuff();
+
     return 0;
 }
